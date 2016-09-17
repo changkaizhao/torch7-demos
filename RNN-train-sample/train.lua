@@ -6,6 +6,7 @@
 require 'nn'
 require 'nngraph'
 require 'optim'
+require 'oneHot'
 dofile('RNN.lua')
 -- local c = require 'trepl.colorize'
 local model_utils = require 'model_utils'
@@ -15,23 +16,34 @@ torch.setdefaulttensortype('torch.FloatTensor')
 
 local opt = {}
 opt.dictionary_size = 2 -- sequence of 2 symbols
-opt.train_size = 10000 -- train data size
+opt.train_size = 500 -- train data size
 opt.seq_length = 4 -- RNN time steps
-
+oneHot = OneHot(2)
+verbos = false
 print('Creating Input...')
 -- create a sequence of 2 numbers: {2, 1, 2, 2, 1, 1, 2, 2, 1 ..}
+-- {1,2,2,1}
 local s = torch.Tensor(opt.train_size):random(2)
 -- print('Inputs sequence:', s:view(1,-1))
 local y = torch.ones(1,opt.train_size)
 for i = 4, opt.train_size do -- if you find sequence ...1001... then output is class '2', otherwise is '1'
-   if (s[{i-3}]==2 and s[{i-2}]==1 and s[{i-1}]==1 and s[{i}]==2) then y[{1,{i}}] = 2 end
+   if (s[{i-3}]==1 and s[{i-2}]==2 and s[{i-1}]==2 and s[{i}]==1) then y[{1,{i}}] = 2 end
 end
 -- print('Desired output sequence:', y)
 local x = torch.zeros(2, opt.train_size) -- create input with 1-hot encoding:
 for i = 1, opt.train_size do
-   if y[{1,{i}}] == 2 then x[{{},{i}}] = torch.ones(2) end
+   x[{{},{i}}] = oneHot:forward(s[i]) 
 end
--- print('Input vector:', x)
+
+--Check dataSet
+if verbos then
+   print('S')
+   print(s)
+   print('Input vector:')
+   print(x)
+   print('Out put')
+   print(y)
+end
 
 -- model:
 print('Creating Model...')
@@ -86,7 +98,7 @@ end
 -- training function:
 local init_state_global = clone_list(init_state)
 local bo = 0 -- batch offset / counter
-opt.grad_clip = 5
+opt.grad_clip = 0.001
 function feval(p)
   if p ~= params then
     params:copy(p)
@@ -101,11 +113,18 @@ function feval(p)
   local loss = 0
   for t = 1, opt.seq_length do
     clones.rnn[t]:training() -- make sure we are in correct training mode
+    -- Check input of feval and output
+    if verbos then
+       print('Input')
+       print(x[{{},{t+bo,t+bo+3}}])
+       print('Target')
+       print(y[{1,{t+3+bo}}])
+    end
     local lst = clones.rnn[t]:forward{x[{{},{t+bo}}]:t(), unpack(rnn_state[t-1])}
     rnn_state[t] = {}
     for i=1,#init_state do table.insert(rnn_state[t], lst[i]) end -- extract the state, without output
     predictions[t] = lst[#lst]
-    loss = loss + clones.criterion[t]:forward(predictions[t], y[{1,{t+bo}}])
+    loss = loss + clones.criterion[t]:forward(predictions[t], y[{1,{t+3+bo}}])
   end
   loss = loss / opt.seq_length
   -- backward pass --------------------------------------------------------------
@@ -115,7 +134,7 @@ function feval(p)
     -- print(drnn_state)
     -- backprop through loss, and softmax/linear
     -- print(predictions[t], y[{1,{t+bo}}])
-    local doutput_t = clones.criterion[t]:backward(predictions[t], y[{1,{t+bo}}])
+    local doutput_t = clones.criterion[t]:backward(predictions[t], y[{1,{t+3+bo}}])
     -- print('douptut', doutput_t)
     table.insert(drnn_state[t], doutput_t)
     local dlst = clones.rnn[t]:backward({x[{{},{t+bo}}]:t(), unpack(rnn_state[t-1])}, drnn_state[t])
@@ -135,23 +154,22 @@ function feval(p)
   grad_params:clamp(-opt.grad_clip, opt.grad_clip)
   -- print(params,grad_params)
   -- point to next batch:
-  bo = bo + opt.seq_length
+  bo = bo + 1
   return loss, grad_params
 end
 
 
 -- training:
-opt.learning_rate = 2e-3
-opt.decay_rate = 0.95
+opt.learning_rate = 1e-3
+opt.decay_rate = 0
 print('Training...')
 local losses = {}
 local optim_state = {learningRate = opt.learning_rate, alpha = opt.decay_rate}
-local iterations = opt.train_size/opt.seq_length
+local iterations = opt.train_size - 7
 for i = 1, iterations do
   local _, loss = optim.rmsprop(feval, params, optim_state)
   losses[#losses + 1] = loss[1]
-
-  if i % (iterations/10) == 0 then
+  if math.floor(math.fmod(i, (iterations/10))) % 20 == 0 then
     print(string.format("Iteration %8d, loss = %4.4f, loss/seq_len = %4.4f, gradnorm = %4.4e", i, loss[1], loss[1] / opt.seq_length, grad_params:norm()))
   end
 end
@@ -178,14 +196,15 @@ function test()
   -- print results:
   local max, idx
   max,idx = torch.max( predictions[opt.seq_length], 2)
-  print()
-  print('Prediction:', idx[1][1], 'Label:', y[{1,{opt.seq_length+bo}}][1])
+  print('Input')
+  print(x[{{},{bo+1,bo+4}}])
+  print('Prediction:', idx[1][1], 'Label:', y[{1,{opt.seq_length+bo+1}}][1])
   -- point to next batch:
-  bo = bo + opt.seq_length
+  bo = bo + 1 
 end
 
 -- and test!
-opt.test_samples = 20
+opt.test_samples = 100
 for i = 1, opt.test_samples do
   test()
 end

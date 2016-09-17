@@ -12,7 +12,7 @@ require 'rnn'
 -- SET UP MODEL: --------------------------------------------------------------
 
 -- model hyper-parameters 
-batchSize = 10
+batchSize = 1
 rho = 4 -- sequence length
 hiddenSize = 10
 nIndex = 2 -- input words
